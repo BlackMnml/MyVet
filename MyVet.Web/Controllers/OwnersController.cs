@@ -2,27 +2,35 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
 using MyVet.Web.Data;
 using MyVet.Web.Data.Entities;
+using MyVet.Web.Helpers;
+using MyVet.Web.Models;
 
 namespace MyVet.Web.Controllers
 {
+    [Authorize(Roles = "Admin")]
     public class OwnersController : Controller
     {
         private readonly DataContext _context;
+        private readonly IUserHelper _userHelper;
 
-        public OwnersController(DataContext context)
+        public OwnersController(DataContext context, IUserHelper userHelper)
         {
             _context = context;
+            _userHelper = userHelper;
         }
 
         // GET: Owners
-        public async Task<IActionResult> Index()
+        public IActionResult Index()
         {
-            return View(await _context.Owners.ToListAsync());
+            return View(_context.Owners
+                .Include(o =>o.User)
+                .Include(o => o.Pets));
         }
 
         // GET: Owners/Details/5
@@ -34,6 +42,11 @@ namespace MyVet.Web.Controllers
             }
 
             var owner = await _context.Owners
+                .Include(o => o.User)
+                .Include(o => o.Pets)
+                .ThenInclude(p => p.PetType)
+                .Include(o => o.Pets)
+                .ThenInclude(p => p.Histories)
                 .FirstOrDefaultAsync(m => m.Id == id);
             if (owner == null)
             {
@@ -49,20 +62,59 @@ namespace MyVet.Web.Controllers
             return View();
         }
 
-        // POST: Owners/Create
-        // To protect from overposting attacks, please enable the specific properties you want to bind to, for 
-        // more details see http://go.microsoft.com/fwlink/?LinkId=317598.
+
+
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> Create([Bind("Id")] Owner owner)
+        public async Task<IActionResult> Create(AddUserViewModel model)
         {
             if (ModelState.IsValid)
             {
-                _context.Add(owner);
-                await _context.SaveChangesAsync();
-                return RedirectToAction(nameof(Index));
+                var user = new User
+                {
+                    Address=model.Address,
+                    Document=model.Document,
+                    FirstName=model.FirstName,
+                    LastName=model.LastName,
+                    Email=model.Username,
+                    PhoneNumber=model.PhoneNumber,
+                    UserName=model.Username
+                };
+
+                var response = await _userHelper.AddUserAsync(user, model.Password);
+                if (response.Succeeded)
+                {
+                    var UserInDB = await _userHelper.GetUserByEmailAsync(model.Username);
+                    await _userHelper.AddUserToRoleAsync(UserInDB, "Customer");
+
+
+                    var owner = new Owner
+                    {
+                        Agendas = new List<Agenda>(),
+                        Pets = new List<Pet>(),
+                        User = UserInDB
+                    };
+
+                    _context.Owners.Add(owner);
+                    try
+                    {
+
+                        await _context.SaveChangesAsync();
+
+                        return RedirectToAction(nameof(Index));
+
+                    }
+                    catch (Exception ex)
+                    {
+                        ModelState.AddModelError(string.Empty, ex.ToString());
+                        return View(model);
+
+                    }
+
+                }
+                ModelState.AddModelError(string.Empty, response.Errors.FirstOrDefault().Description);
             }
-            return View(owner);
+            return View(model);
         }
 
         // GET: Owners/Edit/5
